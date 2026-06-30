@@ -8,110 +8,127 @@ const PADDLE_H = 100;
 const PADDLE_W = 20;
 const BALL_SIZE = 15;
 const PADDLE_SPEED = 8;
-const TICK_RATE = 1000 / 60; // 60 FPS
+const TICK_RATE = 1000 / 30; // Serwer działa w 30 FPS, by udowodnić moc interpolacji
 
-//Single Source of Truth
 let gameState = {
-	p1: { y: 250, score: 0, movingUp: false, movingDown: false },
-	p2: { y: 250, score: 0, movingUp: false, movingDown: false },
+	p1: { y: 250, score: 0, lastProcessedSeq: 0 },
+	p2: { y: 250, score: 0, lastProcessedSeq: 0 },
 	ball: { x: 400, y: 300, vx: 5, vy: 5 },
 };
 
-let clients: WebSocket[] = [];
+const inputQueues = {
+	p1: [] as { seq: number; dir: number }[],
+	p2: [] as { seq: number; dir: number }[],
+};
+
+let clients: { ws: WebSocket; id: "p1" | "p2" }[] = [];
+
+function resetBall() {
+	gameState.ball = {
+		x: GAME_WIDTH / 2 - BALL_SIZE / 2,
+		y: GAME_HEIGHT / 2 - BALL_SIZE / 2,
+		vx: 6 * (Math.random() > 0.5 ? 1 : -1),
+		vy: 4 * (Math.random() > 0.5 ? 1 : -1),
+	};
+}
 
 wss.on("connection", (ws: WebSocket) => {
-	clients.push(ws);
+	const playerId = clients.some((c) => c.id === "p1") ? "p2" : "p1";
+	clients.push({ ws, id: playerId });
+	console.log(`Gracz ${playerId} dołączył do gry.`);
 
-	const playerId = clients.length === 1 ? "p1" : "p2";
-	console.log(`Player ${playerId === "p1" ? "1 (Left)" : "2 (Right)"} joined!`);
+	ws.send(JSON.stringify({ type: "init", id: playerId }));
 
 	ws.on("message", (message: string) => {
 		const data = JSON.parse(message);
-
-		if (data.type === "keydown") {
-			if (data.key === "UP") gameState[playerId].movingUp = true;
-			if (data.key === "DOWN") gameState[playerId].movingDown = true;
-		} else if (data.type === "keyup") {
-			if (data.key === "UP") gameState[playerId].movingUp = false;
-			if (data.key === "DOWN") gameState[playerId].movingDown = false;
+		if (data.type === "input") {
+			inputQueues[playerId].push({ seq: data.seq, dir: data.dir });
 		}
 	});
 
 	ws.on("close", () => {
-		clients = clients.filter((client) => client !== ws);
-		console.log(`Player ${playerId} disconnected.`);
-		gameState[playerId].movingUp = false;
-		gameState[playerId].movingDown = false;
+		clients = clients.filter((c) => c.ws !== ws);
+		console.log(`Gracz ${playerId} opuścił grę.`);
 	});
 });
 
-// GAME LOOP ---
+// Główna pętla gry (Autorytatywna fizyka i kolizje)
 setInterval(() => {
-	if (gameState.p1.movingUp)
-		gameState.p1.y = Math.max(0, gameState.p1.y - PADDLE_SPEED);
-	if (gameState.p1.movingDown)
-		gameState.p1.y = Math.min(
-			GAME_HEIGHT - PADDLE_H,
-			gameState.p1.y + PADDLE_SPEED,
+	// 1. Przetwarzanie wejść od graczy
+	while (inputQueues.p1.length > 0) {
+		const input = inputQueues.p1.shift()!;
+		gameState.p1.y += input.dir * PADDLE_SPEED;
+		gameState.p1.y = Math.max(
+			0,
+			Math.min(GAME_HEIGHT - PADDLE_H, gameState.p1.y),
 		);
+		gameState.p1.lastProcessedSeq = input.seq;
+	}
 
-	if (gameState.p2.movingUp)
-		gameState.p2.y = Math.max(0, gameState.p2.y - PADDLE_SPEED);
-	if (gameState.p2.movingDown)
-		gameState.p2.y = Math.min(
-			GAME_HEIGHT - PADDLE_H,
-			gameState.p2.y + PADDLE_SPEED,
+	while (inputQueues.p2.length > 0) {
+		const input = inputQueues.p2.shift()!;
+		gameState.p2.y += input.dir * PADDLE_SPEED;
+		gameState.p2.y = Math.max(
+			0,
+			Math.min(GAME_HEIGHT - PADDLE_H, gameState.p2.y),
 		);
+		gameState.p2.lastProcessedSeq = input.seq;
+	}
 
+	// 2. Autorytatywny ruch piłki
 	gameState.ball.x += gameState.ball.vx;
 	gameState.ball.y += gameState.ball.vy;
 
+	// Kolizje ze ścianami góra/dół
 	if (gameState.ball.y <= 0 || gameState.ball.y + BALL_SIZE >= GAME_HEIGHT) {
 		gameState.ball.vy *= -1;
 	}
 
+	// Kolizja z paletką P1 (X: 50, szerokość: 20)
 	if (
 		gameState.ball.x <= 50 + PADDLE_W &&
+		gameState.ball.x + BALL_SIZE >= 50 &&
 		gameState.ball.y + BALL_SIZE >= gameState.p1.y &&
 		gameState.ball.y <= gameState.p1.y + PADDLE_H
 	) {
-		gameState.ball.vx *= -1;
-		gameState.ball.x = 50 + PADDLE_W;
+		gameState.ball.vx = Math.abs(gameState.ball.vx); // Odbicie w prawo
+		gameState.ball.x = 50 + PADDLE_W; // Wyciągnięcie z kolizji
 	}
 
+	// Kolizja z paletką P2 (X: 730, szerokość: 20)
 	if (
-		gameState.ball.x + BALL_SIZE >= GAME_WIDTH - 50 - PADDLE_W &&
+		gameState.ball.x + BALL_SIZE >= 730 &&
+		gameState.ball.x <= 730 + PADDLE_W &&
 		gameState.ball.y + BALL_SIZE >= gameState.p2.y &&
 		gameState.ball.y <= gameState.p2.y + PADDLE_H
 	) {
-		gameState.ball.vx *= -1;
-		gameState.ball.x = GAME_WIDTH - 50 - PADDLE_W - BALL_SIZE;
+		gameState.ball.vx = -Math.abs(gameState.ball.vx); // Odbicie w lewo
+		gameState.ball.x = 730 - BALL_SIZE; // Wyciągnięcie z kolizji
 	}
 
+	// Punktacja i reset piłki
 	if (gameState.ball.x < 0) {
 		gameState.p2.score++;
 		resetBall();
-	}
-	if (gameState.ball.x > GAME_WIDTH) {
+	} else if (gameState.ball.x > GAME_WIDTH) {
 		gameState.p1.score++;
 		resetBall();
 	}
 
-	const payload = JSON.stringify(gameState);
+	// 3. Wysłanie stanu z sygnaturą czasową serwera
+	const payload = JSON.stringify({
+		type: "state",
+		state: gameState,
+		serverTime: Date.now(),
+	});
+
 	clients.forEach((client) => {
-		if (client.readyState === WebSocket.OPEN) {
-			client.send(payload);
+		if (client.ws.readyState === WebSocket.OPEN) {
+			client.ws.send(payload);
 		}
 	});
 }, TICK_RATE);
 
-function resetBall() {
-	gameState.ball = {
-		x: GAME_WIDTH / 2,
-		y: GAME_HEIGHT / 2,
-		vx: 5 * (Math.random() > 0.5 ? 1 : -1),
-		vy: 5 * (Math.random() > 0.5 ? 1 : -1),
-	};
-}
-
-console.log("Serwer Pong is working on port 8080...");
+console.log(
+	"Autorytatywny serwer z pełnymi zasadami Pong działający na porcie 8080...",
+);

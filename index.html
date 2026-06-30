@@ -2,26 +2,27 @@
 <html lang="pl">
 	<head>
 		<meta charset="UTF-8" />
-		<title>Pong - Basic</title>
+		<title>Pong - using Netcode</title>
 		<style>
 			body {
 				display: flex;
 				flex-direction: column;
 				align-items: center;
-				background-color: #111;
-				color: white;
+				background: #111;
+				color: #fff;
 				font-family: monospace;
-				margin-top: 50px;
+				margin-top: 30px;
 			}
 			canvas {
-				background-color: #222;
+				background: #222;
 				border: 4px solid #fff;
+				box-shadow: 0 0 20px rgba(255, 255, 255, 0.1);
 			}
 		</style>
 	</head>
 	<body>
-		<h2>Multiplayer Pong (Authoritative Server)</h2>
-		<p>Open two browser tabs to play against yourself.</p>
+		<h2>Multiplayer Pong (Netcode AAA)</h2>
+		<p>Controls: Up Arrow / Down Arrow</p>
 		<canvas id="gameCanvas" width="800" height="600"></canvas>
 
 		<script>
@@ -29,43 +30,149 @@
 			const ctx = canvas.getContext("2d");
 			const socket = new WebSocket("ws://localhost:8080");
 
+			const PADDLE_SPEED = 8;
+			const RENDER_DELAY = 100;
+
+			let myId = null;
+			let localPlayerY = 250;
+			let currentSequenceNumber = 0;
+			let pendingInputs = [];
+			let stateBuffer = [];
+
+			let lastScoreP1 = 0;
+			let lastScoreP2 = 0;
+
+			let inputDir = 0;
+
 			socket.onmessage = (event) => {
-				const state = JSON.parse(event.data);
-				drawGame(state);
+				const data = JSON.parse(event.data);
+
+				if (data.type === "init") {
+					myId = data.id;
+				} else if (data.type === "state") {
+					if (
+						data.state.p1.score !== lastScoreP1 ||
+						data.state.p2.score !== lastScoreP2
+					) {
+						stateBuffer = [];
+						lastScoreP1 = data.state.p1.score;
+						lastScoreP2 = data.state.p2.score;
+					}
+
+					stateBuffer.push({ state: data.state, time: data.serverTime });
+					if (stateBuffer.length > 30) stateBuffer.shift();
+
+					// SERVER RECONCILIATION
+					if (myId) {
+						const serverMe = data.state[myId];
+						localPlayerY = serverMe.y;
+						pendingInputs = pendingInputs.filter(
+							(input) => input.seq > serverMe.lastProcessedSeq,
+						);
+						pendingInputs.forEach((input) => {
+							localPlayerY += input.dir * PADDLE_SPEED;
+						});
+					}
+				}
 			};
 
-			function drawGame(state) {
+			window.addEventListener("keydown", (e) => {
+				if (e.key === "ArrowUp") {
+					e.preventDefault();
+					inputDir = -1;
+				}
+				if (e.key === "ArrowDown") {
+					e.preventDefault();
+					inputDir = 1;
+				}
+			});
+			window.addEventListener("keyup", (e) => {
+				if (
+					(e.key === "ArrowUp" && inputDir === -1) ||
+					(e.key === "ArrowDown" && inputDir === 1)
+				) {
+					inputDir = 0;
+				}
+			});
+
+			function clientLoop() {
+				//Client-Side Prediction
+				if (myId && inputDir !== 0) {
+					currentSequenceNumber++;
+					const input = { seq: currentSequenceNumber, dir: inputDir };
+
+					localPlayerY += input.dir * PADDLE_SPEED;
+					localPlayerY = Math.max(0, Math.min(600 - 100, localPlayerY));
+
+					pendingInputs.push(input);
+					socket.send(JSON.stringify({ type: "input", ...input }));
+				}
+
+				render();
+				requestAnimationFrame(clientLoop);
+			}
+
+			function render() {
 				ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+				if (stateBuffer.length < 2) {
+					ctx.fillStyle = "#fff";
+					ctx.font = "24px monospace";
+					ctx.fillText("Waiting for synchronization with the server...", 120, 300);
+					return;
+				}
+
+				// --- ENTITY INTERPOLATION ---
+				const renderTime = Date.now() - RENDER_DELAY;
+				let s0 = stateBuffer[0];
+				let s1 = stateBuffer[1];
+
+				for (let i = 1; i < stateBuffer.length; i++) {
+					if (stateBuffer[i].time > renderTime) {
+						s0 = stateBuffer[i - 1];
+						s1 = stateBuffer[i];
+						break;
+					}
+				}
+
+				let interpP1Y = s0.state.p1.y;
+				let interpP2Y = s0.state.p2.y;
+				let interpBallX = s0.state.ball.x;
+				let interpBallY = s0.state.ball.y;
+
+				if (s0.time !== s1.time && renderTime >= s0.time) {
+					const ratio = (renderTime - s0.time) / (s1.time - s0.time);
+					interpP1Y = s0.state.p1.y + (s1.state.p1.y - s0.state.p1.y) * ratio;
+					interpP2Y = s0.state.p2.y + (s1.state.p2.y - s0.state.p2.y) * ratio;
+					interpBallX =
+						s0.state.ball.x + (s1.state.ball.x - s0.state.ball.x) * ratio;
+					interpBallY =
+						s0.state.ball.y + (s1.state.ball.y - s0.state.ball.y) * ratio;
+				}
+
 				ctx.fillStyle = "#fff";
 
 				for (let i = 0; i < canvas.height; i += 40) {
 					ctx.fillRect(canvas.width / 2 - 2, i, 4, 20);
 				}
 
-				ctx.fillRect(50, state.p1.y, 20, 100);
-
-				ctx.fillRect(730, state.p2.y, 20, 100);
-
-				ctx.fillRect(state.ball.x, state.ball.y, 15, 15);
-
-				ctx.font = "48px monospace";
-				ctx.fillText(state.p1.score, canvas.width / 4, 60);
-				ctx.fillText(state.p2.score, (3 * canvas.width) / 4, 60);
-			}
-
-			function sendInput(type, keyEvent) {
-				let key = null;
-				if (keyEvent.key === "ArrowUp" || keyEvent.key === "w") key = "UP";
-				if (keyEvent.key === "ArrowDown" || keyEvent.key === "s") key = "DOWN";
-
-				if (key) {
-					keyEvent.preventDefault();
-					socket.send(JSON.stringify({ type, key }));
+				if (myId === "p1") {
+					ctx.fillRect(50, localPlayerY, 20, 100); // Me (P1)
+					ctx.fillRect(730, interpP2Y, 20, 100); // Oponent (P2)
+				} else {
+					ctx.fillRect(50, interpP1Y, 20, 100); // Oponent (P1)
+					ctx.fillRect(730, localPlayerY, 20, 100); // Me (P2)
 				}
+
+				ctx.fillRect(interpBallX, interpBallY, 15, 15);
+
+				const latestState = stateBuffer[stateBuffer.length - 1].state;
+				ctx.font = "48px monospace";
+				ctx.fillText(latestState.p1.score, canvas.width / 4, 70);
+				ctx.fillText(latestState.p2.score, (canvas.width / 4) * 3 - 30, 70);
 			}
 
-			window.addEventListener("keydown", (e) => sendInput("keydown", e));
-			window.addEventListener("keyup", (e) => sendInput("keyup", e));
+			requestAnimationFrame(clientLoop);
 		</script>
 	</body>
 </html>

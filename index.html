@@ -1,0 +1,62 @@
+<!-- EXAMPLE HTML FILE -->
+<!doctype html>
+<html lang="pl">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>WebSocket & Canvas PoC</title>
+		<style>
+			body {
+				display: flex;
+				justify-content: center;
+				align-items: center;
+				height: 100vh;
+				margin: 0;
+				background-color: #222;
+			}
+			canvas {
+				background-color: #eee;
+				border: 2px solid #555;
+				box-shadow: 0 0 15px rgba(0, 0, 0, 0.5);
+			}
+		</style>
+	</head>
+	<body>
+		<canvas id="gameCanvas" width="500" height="500"></canvas>
+
+		<script>
+			const canvas = document.getElementById("gameCanvas");
+			const ctx = canvas.getContext("2d");
+			const socket = new WebSocket("ws://localhost:8080");
+
+			socket.onopen = () => {
+				console.log("Connected to WebSocket server");
+			};
+
+			socket.onmessage = (event) => {
+				const serverPosition = JSON.parse(event.data);
+				drawSquare(serverPosition.x, serverPosition.y);
+			};
+
+			function drawSquare(x, y) {
+				ctx.clearRect(0, 0, canvas.width, canvas.height);
+				ctx.fillStyle = "#ff4757";
+				ctx.fillRect(x, y, 50, 50);
+			}
+
+			window.addEventListener("keydown", (e) => {
+				let direction = null;
+
+				if (e.key === "ArrowUp") direction = "UP";
+				if (e.key === "ArrowDown") direction = "DOWN";
+				if (e.key === "ArrowLeft") direction = "LEFT";
+				if (e.key === "ArrowRight") direction = "RIGHT";
+
+				if (direction) {
+					e.preventDefault();
+					socket.send(JSON.stringify({ direction }));
+				}
+			});
+		</script>
+	</body>
+</html>

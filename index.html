@@ -1,62 +1,71 @@
-<!-- EXAMPLE HTML FILE -->
 <!doctype html>
 <html lang="pl">
 	<head>
 		<meta charset="UTF-8" />
-		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-		<title>WebSocket & Canvas PoC</title>
+		<title>Pong - Basic</title>
 		<style>
 			body {
 				display: flex;
-				justify-content: center;
+				flex-direction: column;
 				align-items: center;
-				height: 100vh;
-				margin: 0;
-				background-color: #222;
+				background-color: #111;
+				color: white;
+				font-family: monospace;
+				margin-top: 50px;
 			}
 			canvas {
-				background-color: #eee;
-				border: 2px solid #555;
-				box-shadow: 0 0 15px rgba(0, 0, 0, 0.5);
+				background-color: #222;
+				border: 4px solid #fff;
 			}
 		</style>
 	</head>
 	<body>
-		<canvas id="gameCanvas" width="500" height="500"></canvas>
+		<h2>Multiplayer Pong (Authoritative Server)</h2>
+		<p>Open two browser tabs to play against yourself.</p>
+		<canvas id="gameCanvas" width="800" height="600"></canvas>
 
 		<script>
 			const canvas = document.getElementById("gameCanvas");
 			const ctx = canvas.getContext("2d");
 			const socket = new WebSocket("ws://localhost:8080");
 
-			socket.onopen = () => {
-				console.log("Connected to WebSocket server");
-			};
-
 			socket.onmessage = (event) => {
-				const serverPosition = JSON.parse(event.data);
-				drawSquare(serverPosition.x, serverPosition.y);
+				const state = JSON.parse(event.data);
+				drawGame(state);
 			};
 
-			function drawSquare(x, y) {
+			function drawGame(state) {
 				ctx.clearRect(0, 0, canvas.width, canvas.height);
-				ctx.fillStyle = "#ff4757";
-				ctx.fillRect(x, y, 50, 50);
+				ctx.fillStyle = "#fff";
+
+				for (let i = 0; i < canvas.height; i += 40) {
+					ctx.fillRect(canvas.width / 2 - 2, i, 4, 20);
+				}
+
+				ctx.fillRect(50, state.p1.y, 20, 100);
+
+				ctx.fillRect(730, state.p2.y, 20, 100);
+
+				ctx.fillRect(state.ball.x, state.ball.y, 15, 15);
+
+				ctx.font = "48px monospace";
+				ctx.fillText(state.p1.score, canvas.width / 4, 60);
+				ctx.fillText(state.p2.score, (3 * canvas.width) / 4, 60);
 			}
 
-			window.addEventListener("keydown", (e) => {
-				let direction = null;
+			function sendInput(type, keyEvent) {
+				let key = null;
+				if (keyEvent.key === "ArrowUp" || keyEvent.key === "w") key = "UP";
+				if (keyEvent.key === "ArrowDown" || keyEvent.key === "s") key = "DOWN";
 
-				if (e.key === "ArrowUp") direction = "UP";
-				if (e.key === "ArrowDown") direction = "DOWN";
-				if (e.key === "ArrowLeft") direction = "LEFT";
-				if (e.key === "ArrowRight") direction = "RIGHT";
-
-				if (direction) {
-					e.preventDefault();
-					socket.send(JSON.stringify({ direction }));
+				if (key) {
+					keyEvent.preventDefault();
+					socket.send(JSON.stringify({ type, key }));
 				}
-			});
+			}
+
+			window.addEventListener("keydown", (e) => sendInput("keydown", e));
+			window.addEventListener("keyup", (e) => sendInput("keyup", e));
 		</script>
 	</body>
 </html>

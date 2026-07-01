@@ -61,3 +61,8 @@ export interface ServerMessage {
 	message?: string;
 	stats?: GameStats; // Used for end game results
 }
+
+export interface LeaderboardEntry {
+	username: string;
+	elo: number;
+}

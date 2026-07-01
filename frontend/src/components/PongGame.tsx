@@ -4,19 +4,26 @@ import type { ServerMessage, StateBufferItem, GameStats } from "../types";
 interface PongGameProps {
 	socket: WebSocket;
 	myId: "p1" | "p2";
-	onLeaveRoom: () => void; // New prop to handle going back to lobby
+	onLeaveRoom: () => void;
+}
+
+// Particle system interface
+interface Particle {
+	x: number;
+	y: number;
+	vx: number;
+	vy: number;
+	life: number;
+	color: string;
 }
 
 export const PongGame = ({ socket, myId, onLeaveRoom }: PongGameProps) => {
 	const canvasRef = useRef<HTMLCanvasElement>(null);
-
-	// New states for Game Over logic
 	const [isGameOver, setIsGameOver] = useState(false);
 	const [gameOverMsg, setGameOverMsg] = useState("");
 	const [gameStats, setGameStats] = useState<GameStats | null>(null);
 
 	useEffect(() => {
-		// If game is over, we don't need to run the canvas logic
 		if (isGameOver) return;
 
 		const canvas = canvasRef.current;
@@ -29,16 +36,42 @@ export const PongGame = ({ socket, myId, onLeaveRoom }: PongGameProps) => {
 		let currentSequenceNumber = 0;
 		let pendingInputs: { seq: number; dir: number }[] = [];
 		let stateBuffer: StateBufferItem[] = [];
+		let particles: Particle[] = []; // Array to hold explosion particles
 
 		const PADDLE_SPEED = 8;
 		let inputDir = 0;
 		let lastScoreP1 = 0;
 		let lastScoreP2 = 0;
+		let lastBallVx = 0;
+
+		// Helper to spawn particles on paddle hit
+		const spawnParticles = (x: number, y: number, color: string) => {
+			for (let i = 0; i < 15; i++) {
+				particles.push({
+					x,
+					y,
+					vx: (Math.random() - 0.5) * 10,
+					vy: (Math.random() - 0.5) * 10,
+					life: 1.0,
+					color,
+				});
+			}
+		};
 
 		const handleSocketMessage = (event: MessageEvent) => {
 			const data = JSON.parse(event.data) as ServerMessage;
 
 			if (data.type === "state" && data.state && data.serverTime) {
+				// Check for paddle hit (velocity change on X axis) to spawn particles
+				if (
+					lastBallVx !== 0 &&
+					Math.sign(data.state.ball.vx) !== Math.sign(lastBallVx)
+				) {
+					const hitColor = data.state.ball.x < 400 ? "#0ff" : "#ff00ff"; // Cyan for P1, Pink for P2
+					spawnParticles(data.state.ball.x, data.state.ball.y, hitColor);
+				}
+				lastBallVx = data.state.ball.vx;
+
 				if (
 					data.state.p1.score !== lastScoreP1 ||
 					data.state.p2.score !== lastScoreP2
@@ -59,9 +92,7 @@ export const PongGame = ({ socket, myId, onLeaveRoom }: PongGameProps) => {
 				pendingInputs.forEach((input) => {
 					localPlayerY += input.dir * PADDLE_SPEED;
 				});
-			}
-			// NEW: Catch Game Over
-			else if (data.type === "game_over" && data.stats && data.message) {
+			} else if (data.type === "game_over" && data.stats && data.message) {
 				setIsGameOver(true);
 				setGameOverMsg(data.message);
 				setGameStats(data.stats);
@@ -106,32 +137,63 @@ export const PongGame = ({ socket, myId, onLeaveRoom }: PongGameProps) => {
 				socket.send(JSON.stringify({ type: "input", ...input }));
 			}
 
-			ctx.clearRect(0, 0, canvas.width, canvas.height);
+			// TRICK: Instead of clearRect, we fill with slight transparency for a neon trail effect!
+			ctx.fillStyle = "rgba(10, 10, 15, 0.3)";
+			ctx.fillRect(0, 0, canvas.width, canvas.height);
 
 			if (stateBuffer.length > 1) {
 				const latestState = stateBuffer[stateBuffer.length - 1].state;
-				ctx.fillStyle = "#fff";
 
+				// Draw Net
+				ctx.fillStyle = "rgba(255, 255, 255, 0.2)";
 				for (let i = 0; i < canvas.height; i += 40) {
 					ctx.fillRect(canvas.width / 2 - 2, i, 4, 20);
 				}
 
+				// Draw Paddles (Neon Cyan and Pink)
+				ctx.shadowBlur = 15; // Glow effect
 				if (myId === "p1") {
+					ctx.shadowColor = "#0ff";
+					ctx.fillStyle = "#0ff";
 					ctx.fillRect(50, localPlayerY, 20, 100);
+					ctx.shadowColor = "#ff00ff";
+					ctx.fillStyle = "#ff00ff";
 					ctx.fillRect(730, latestState.p2.y, 20, 100);
 				} else {
+					ctx.shadowColor = "#0ff";
+					ctx.fillStyle = "#0ff";
 					ctx.fillRect(50, latestState.p1.y, 20, 100);
+					ctx.shadowColor = "#ff00ff";
+					ctx.fillStyle = "#ff00ff";
 					ctx.fillRect(730, localPlayerY, 20, 100);
 				}
 
+				// Draw Ball (Neon Green)
+				ctx.shadowColor = "#39ff14";
+				ctx.fillStyle = "#39ff14";
 				ctx.fillRect(latestState.ball.x, latestState.ball.y, 15, 15);
+				ctx.shadowBlur = 0; // Reset shadow for score/particles to save performance
 
-				ctx.font = "48px monospace";
-				ctx.fillText(latestState.p1.score.toString(), canvas.width / 4, 70);
+				// Draw and update particles
+				particles = particles.filter((p) => p.life > 0);
+				particles.forEach((p) => {
+					ctx.fillStyle = p.color;
+					ctx.globalAlpha = p.life;
+					ctx.fillRect(p.x, p.y, 4, 4);
+					p.x += p.vx;
+					p.y += p.vy;
+					p.life -= 0.05; // Fade out speed
+				});
+				ctx.globalAlpha = 1.0;
+
+				// Draw Score with Retro Font
+				ctx.fillStyle = "#fff";
+				ctx.font = "48px 'Press Start 2P', monospace";
+				ctx.fillText(latestState.p1.score.toString(), canvas.width / 4 - 24, 80);
 				ctx.fillText(
 					latestState.p2.score.toString(),
-					(canvas.width / 4) * 3 - 30,
-					70,
+					(canvas.width / 4) * 3 - 24,
+					80,
 				);
 			}
 
@@ -148,85 +210,62 @@ export const PongGame = ({ socket, myId, onLeaveRoom }: PongGameProps) => {
 		};
 	}, [socket, myId, isGameOver]);
 
-	// --- GAME OVER OVERLAY RENDERING ---
 	if (isGameOver && gameStats) {
 		const myStats = myId === "p1" ? gameStats.p1 : gameStats.p2;
 		const enemyStats = myId === "p1" ? gameStats.p2 : gameStats.p1;
 		const eloChange = myStats.newElo - myStats.oldElo;
 
 		return (
-			<div
-				style={{
-					width: "800px",
-					height: "600px",
-					background: "#222",
-					border: "4px solid #333",
-					display: "flex",
-					flexDirection: "column",
-					alignItems: "center",
-					justifyContent: "center",
-					color: "white",
-					fontFamily: "sans-serif",
-				}}
-			>
+			<div className='w-[800px] h-[600px] bg-gray-900 border-4 border-gray-700 flex flex-col items-center justify-center text-white font-arcade relative crt'>
 				<h1
-					style={{ fontSize: "48px", color: eloChange > 0 ? "#4cd137" : "#e84118" }}
+					className={`text-4xl ${eloChange > 0 ? "text-neon-green" : "text-red-500"} mb-10 text-center leading-relaxed`}
 				>
 					{gameOverMsg}
 				</h1>
 
-				<div
-					style={{
-						display: "flex",
-						gap: "50px",
-						marginTop: "30px",
-						textAlign: "center",
-					}}
-				>
+				<div className='flex gap-16 text-center'>
 					<div>
-						<h3>You ({myStats.username})</h3>
-						<p style={{ fontSize: "24px" }}>
-							ELO: {myStats.newElo}{" "}
-							<span style={{ color: eloChange > 0 ? "#4cd137" : "#e84118" }}>
-								({eloChange > 0 ? "+" : ""}
-								{eloChange})
-							</span>
+						<h3 className='text-xl mb-4'>
+							You
+							<br />
+							<span className='text-sm text-gray-400'>{myStats.username}</span>
+						</h3>
+						<p className='text-2xl'>ELO: {myStats.newElo}</p>
+						<p
+							className={`text-lg mt-2 ${eloChange > 0 ? "text-neon-green" : "text-red-500"}`}
+						>
+							{eloChange > 0 ? "+" : ""}
+							{eloChange}
 						</p>
 					</div>
 					<div>
-						<h3>Opponent ({enemyStats.username})</h3>
-						<p style={{ fontSize: "24px", color: "#7f8fa6" }}>
-							ELO: {enemyStats.newElo}
-						</p>
+						<h3 className='text-xl mb-4'>
+							Enemy
+							<br />
+							<span className='text-sm text-gray-400'>{enemyStats.username}</span>
+						</h3>
+						<p className='text-2xl text-gray-500'>ELO: {enemyStats.newElo}</p>
 					</div>
 				</div>
 
 				<button
 					onClick={onLeaveRoom}
-					style={{
-						marginTop: "50px",
-						padding: "15px 30px",
-						fontSize: "20px",
-						cursor: "pointer",
-						background: "#fbc531",
-						border: "none",
-						borderRadius: "5px",
-						fontWeight: "bold",
-					}}
+					className='mt-16 px-8 py-4 bg-neon-blue text-black hover:bg-white transition-colors uppercase text-sm'
 				>
-					Return to Lobby
+					Insert Coin (Return)
 				</button>
 			</div>
 		);
 	}
 
-	// --- NORMAL GAME RENDERING ---
 	return (
-		<canvas
-			ref={canvasRef}
-			width={800}
-			height={600}
-			style={{ background: "#222", border: "4px solid #333" }}
-		/>
+		<div className='relative crt inline-block'>
+			<canvas
+				ref={canvasRef}
+				width={800}
+				height={600}
+				className='bg-[#0a0a0f] border-4 border-gray-700 shadow-[0_0_20px_rgba(0,255,255,0.2)]'
+			/>
+		</div>
 	);
 };

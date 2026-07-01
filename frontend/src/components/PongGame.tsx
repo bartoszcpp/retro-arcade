@@ -1,15 +1,24 @@
-import { useEffect, useRef } from "react";
-import type { ServerMessage, StateBufferItem } from "../types";
+import { useEffect, useRef, useState } from "react";
+import type { ServerMessage, StateBufferItem, GameStats } from "../types";
 
 interface PongGameProps {
 	socket: WebSocket;
 	myId: "p1" | "p2";
+	onLeaveRoom: () => void; // New prop to handle going back to lobby
 }
 
-export const PongGame = ({ socket, myId }: PongGameProps) => {
+export const PongGame = ({ socket, myId, onLeaveRoom }: PongGameProps) => {
 	const canvasRef = useRef<HTMLCanvasElement>(null);
 
+	// New states for Game Over logic
+	const [isGameOver, setIsGameOver] = useState(false);
+	const [gameOverMsg, setGameOverMsg] = useState("");
+	const [gameStats, setGameStats] = useState<GameStats | null>(null);
+
 	useEffect(() => {
+		// If game is over, we don't need to run the canvas logic
+		if (isGameOver) return;
+
 		const canvas = canvasRef.current;
 		if (!canvas) return;
 		const ctx = canvas.getContext("2d");
@@ -50,6 +59,12 @@ export const PongGame = ({ socket, myId }: PongGameProps) => {
 				pendingInputs.forEach((input) => {
 					localPlayerY += input.dir * PADDLE_SPEED;
 				});
+			}
+			// NEW: Catch Game Over
+			else if (data.type === "game_over" && data.stats && data.message) {
+				setIsGameOver(true);
+				setGameOverMsg(data.message);
+				setGameStats(data.stats);
 			}
 		};
 
@@ -131,8 +146,81 @@ export const PongGame = ({ socket, myId }: PongGameProps) => {
 			window.removeEventListener("keyup", handleKeyUp);
 			cancelAnimationFrame(animationFrameId);
 		};
-	}, [socket, myId]);
+	}, [socket, myId, isGameOver]);
 
+	// --- GAME OVER OVERLAY RENDERING ---
+	if (isGameOver && gameStats) {
+		const myStats = myId === "p1" ? gameStats.p1 : gameStats.p2;
+		const enemyStats = myId === "p1" ? gameStats.p2 : gameStats.p1;
+		const eloChange = myStats.newElo - myStats.oldElo;
+
+		return (
+			<div
+				style={{
+					width: "800px",
+					height: "600px",
+					background: "#222",
+					border: "4px solid #333",
+					display: "flex",
+					flexDirection: "column",
+					alignItems: "center",
+					justifyContent: "center",
+					color: "white",
+					fontFamily: "sans-serif",
+				}}
+			>
+				<h1
+					style={{ fontSize: "48px", color: eloChange > 0 ? "#4cd137" : "#e84118" }}
+				>
+					{gameOverMsg}
+				</h1>
+
+				<div
+					style={{
+						display: "flex",
+						gap: "50px",
+						marginTop: "30px",
+						textAlign: "center",
+					}}
+				>
+					<div>
+						<h3>You ({myStats.username})</h3>
+						<p style={{ fontSize: "24px" }}>
+							ELO: {myStats.newElo}{" "}
+							<span style={{ color: eloChange > 0 ? "#4cd137" : "#e84118" }}>
+								({eloChange > 0 ? "+" : ""}
+								{eloChange})
+							</span>
+						</p>
+					</div>
+					<div>
+						<h3>Opponent ({enemyStats.username})</h3>
+						<p style={{ fontSize: "24px", color: "#7f8fa6" }}>
+							ELO: {enemyStats.newElo}
+						</p>
+					</div>
+				</div>
+
+				<button
+					onClick={onLeaveRoom}
+					style={{
+						marginTop: "50px",
+						padding: "15px 30px",
+						fontSize: "20px",
+						cursor: "pointer",
+						background: "#fbc531",
+						border: "none",
+						borderRadius: "5px",
+						fontWeight: "bold",
+					}}
+				>
+					Return to Lobby
+				</button>
+			</div>
+		);
+	}
+
+	// --- NORMAL GAME RENDERING ---
 	return (
 		<canvas
 			ref={canvasRef}
